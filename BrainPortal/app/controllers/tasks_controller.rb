@@ -1162,7 +1162,7 @@ class TasksController < ApplicationController
     end
     # Let's be nice with the poor sysadmins who look at logs
     ZenodoClient::ApiClient.default.user_agent =
-      "CBRAIN/#{CBRAIN::CBRAIN::CBRAIN_StartTime_Revision}/ZenodoClient/#{ZenodoClient::VERSION}"
+      "CBRAIN/#{CBRAIN::CBRAIN_StartTime_Revision}/ZenodoClient/#{ZenodoClient::VERSION}"
     zsite
   end
 
@@ -1275,8 +1275,8 @@ class TasksController < ApplicationController
     userfile.sync_to_cache
     content_path = userfile.cache_full_path
     content_name = userfile.name
-    content_path = create_tmp_tar_for_filecollection(userfile) if is_col
-    content_name = userfile.name + ".tar.gz"                   if is_col
+    content_path = create_tmp_tar_for_filecollection(deposit, userfile) if is_col
+    content_name = userfile.name + ".tar.gz"                            if is_col
 
     # Upload
     dep_file = upload_file_content_to_deposit(deposit.id, content_path, content_name)
@@ -1294,7 +1294,9 @@ class TasksController < ApplicationController
     cb_error "No content provided" if text.blank?
 
     # Prep temp file
-    content_path = "/tmp/#{filename}.#{rand(1000000)}"
+    tmpdir = "/tmp/zenodo-upload-#{deposit.id}"
+    Dir.mkdir(tmpdir, 0700) unless Dir.exists?(tmpdir)
+    content_path = "#{tmpdir}/#{filename}"
     File.open(content_path, "w:BINARY") { |fh| fh.write(text) }
 
     # Upload
@@ -1308,9 +1310,11 @@ class TasksController < ApplicationController
   end
 
   # This assumes filecollection has already been sychronized
-  def create_tmp_tar_for_filecollection(filecollection) #:nodoc:
+  def create_tmp_tar_for_filecollection(deposit, filecollection) #:nodoc:
     cache   = filecollection.cache_full_path
-    tmpbase = "/tmp/#{filecollection.name}-#{rand(1000000)}.tar.gz"
+    tmpdir  = "/tmp/zenodo-upload-#{deposit.id}"
+    tmpbase = "#{tmpdir}/#{filecollection.name}.tar.gz"
+    Dir.mkdir(tmpdir, 0700) unless Dir.exists?(tmpdir)
     ret     = system "cd #{cache.parent.to_s.bash_escape} && tar -czf #{tmpbase} #{filecollection.name.bash_escape}"
     cb_error "Cannot create tmp tar file for FileCollection ##{filecollection.id}" unless ret
     tmpbase
@@ -1324,9 +1328,11 @@ class TasksController < ApplicationController
     file_h.close rescue true # hope it's ok
 
     # Rename? Sometimes necessary
-    if dep_file.filename != filename
+    zen_filename = dep_file.filename # can be different
+    if zen_filename != filename
       dep_file.filename = filename
-      filesapi.update_file(deposit_id, dep_file.id, dep_file)
+      ok = filesapi.update_file(deposit_id, dep_file.id, dep_file) rescue nil # sometimes it crashes
+      dep_file.filename = zen_filename if ! ok # reset it back, we couldn't rename it.
     end
 
     dep_file
@@ -1342,7 +1348,7 @@ class TasksController < ApplicationController
 
   def task_params #:nodoc:
     task_attr = params.require_as_params(:cbrain_task).permit(
-      :user_id, :group_id, :description,
+      :user_id, :group_id, :description, :status,
       :bourreau_id, :tool_config_id,
       :batch_id,
       :results_data_provider_id, :params => {}
